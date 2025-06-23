@@ -33,6 +33,95 @@ banner = rf'''
 '''
 
 
+############ HTML Report ############
+def generate_telegram_html_report(active_groups, inactive_groups, keyword_hits, keywords, inactive_days, message_days, max_messages):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Telegram Intelligence Report</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background: #f5f5f5;
+        }}
+        h1, h2 {{
+            color: #4B0082;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+        }}
+        th, td {{
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: left;
+        }}
+        th {{
+            background: #eee;
+        }}
+        .inactive {{
+            color: #a00;
+        }}
+        .active {{
+            color: #080;
+        }}
+        .keyword {{
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Telegram Intelligence Report</h1>
+    <p><strong>Generated on:</strong> {now_str}</p>
+    <p><strong>Inactive threshold:</strong> {inactive_days} days</p>
+    <p><strong>Message scan threshold:</strong> {message_days} days</p>
+    <p><strong>Max messages scanned per group:</strong> {max_messages}</p>
+    <p><strong>Keywords:</strong> {', '.join(escape(k) for k in keywords)}</p>
+
+    <h2>Inactive Groups (≥ {inactive_days} days or no messages)</h2>
+    <table>
+        <tr><th>Group Name</th><th>Last Message</th></tr>"""
+    for g, date in inactive_groups:
+        date_str = date.strftime('%Y-%m-%d %H:%M') if date else "No messages"
+        html += f"<tr><td class='inactive'>{escape(g.name)}</td><td>{escape(date_str)}</td></tr>"
+
+    html += f"""</table>
+    <h2>Active Groups (&lt; {inactive_days} days)</h2>
+    <table>
+        <tr><th>Group Name</th><th>Last Message</th></tr>"""
+    for g, date in active_groups:
+        html += f"<tr><td class='active'>{escape(g.name)}</td><td>{date.strftime('%Y-%m-%d %H:%M')}</td></tr>"
+
+    html += "</table>"
+
+    html += "<h2>Keyword Hits</h2>"
+    if not keyword_hits:
+        html += "<p>No keyword matches found in active groups.</p>"
+    else:
+        for group_name, messages in keyword_hits.items():
+            html += f"<h3>{escape(group_name)}</h3>"
+            for msg in messages:
+                highlighted_text = escape(msg['text'])
+                for kw in keywords:
+                    highlighted_text = re.sub(f"(?i)({re.escape(kw)})", r"<span style='color:red; font-weight:bold;'>\1</span>", highlighted_text)
+                html += f"<div class='keyword'><strong>{msg['date']}</strong><br>{highlighted_text}</div>"
+
+    html += "</body></html>"
+
+    timestamp = datetime.now().strftime("%Y.%m.%d_%Hh%M")
+    filename = f"telegram_report_{timestamp}.html"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"\n{M}[✓] {G}HTML report generated: {C}{filename}")
+
+
 ############ Telegram ############
 def get_threshold_days():
     try:
@@ -41,6 +130,22 @@ def get_threshold_days():
     except ValueError:
         print(f"{M}[!] {R}Invalid input, defaulting to 10 days.")
         return 10
+
+def get_message_days():
+    try:
+        days = int(input(f" {G}Enter how many days back to scan messages (default: 10) : ").strip() or "10")
+        return days
+    except ValueError:
+        print(f"{M}[!] {R}Invalid input, defaulting to 10 days.")
+        return 10
+
+def get_max_messages():
+    try:
+        max_m = int(input(f" {G}Max messages to scan per group (default: 1000) : ").strip() or "1000")
+        return max_m
+    except ValueError:
+        print(f"{M}[!] {R}Invalid input, defaulting to 1000 messages.")
+        return 1000
 
 
 def get_keywords():
@@ -67,8 +172,9 @@ def get_keywords():
         print(f"{M}[!] {R}Invalid choice")
         return []
 
+keyword_hits = {}
 
-async def telegram(keywords, inactive_days, active_threshold):
+async def telegram(keywords, inactive_days, message_days, active_threshold, message_threshold, max_messages):
     await client.start()
     print(f"\n{M}[!] {G}🔗 Connected to Telegram")
 
@@ -106,13 +212,26 @@ async def telegram(keywords, inactive_days, active_threshold):
     for g, _ in active_groups:
         print(f"{M}[*] {G}📂 Scanning {C}{g.name}...")
         try:
-            async for message in client.iter_messages(g.entity, limit=1000):
+            async for message in client.iter_messages(g.entity, limit=max_messages):
+                if message.date < message_threshold:
+                    break  # stop scanning messages older than threshold
                 if message.text:
                     if any(keyword.lower() in message.text.lower() for keyword in keywords):
-                        print(f"{M}[+] {G}📨 {message.date.strftime('%Y-%m-%d %H:%M')}\n{G}{message.text}\n{C}{'-' * 50}")
+                        highlighted = message.text
+                        for kw in keywords:
+                            highlighted = re.sub(f"(?i)({re.escape(kw)})", f"{R}\\1{G}", highlighted)
+                        print(f"{M}[+] {G}📨 {message.date.strftime('%Y-%m-%d %H:%M')}\n{highlighted}\n{C}{'-' * 50}")
+
+                        if g.name not in keyword_hits:
+                            keyword_hits[g.name] = []
+                        keyword_hits[g.name].append({
+                            "date": message.date.strftime('%Y-%m-%d %H:%M'),
+                            "text": message.text
+                        })
         except Exception as e:
             print(f"{M}[!] {R}Error reading messages from {g.name} : {e}")
 
+    generate_telegram_html_report(active_groups, inactive_groups, keyword_hits, keywords, inactive_days, message_days, max_messages)
     await client.disconnect()
 
 
@@ -209,7 +328,7 @@ def filter_posts_by_keywords(posts, keywords):
 
 
 def highlight_keywords(text, keywords):
-    # Highlight keywords in red in the given text
+    """Highlight keywords in red in the given text"""
     for kw in keywords:
         if kw:
             text = text.replace(kw, f"{R}{kw}{G}")
@@ -251,7 +370,7 @@ def get_ransomwares_groups():
             
         target = input(f"\n{G}🔎 Want details about a specific group? (type its name or press [Enter] to skip): ").strip()
         if target:
-            # Match insensitive (better UX)
+            # Match insensitive (best UX)
             match = next((g for g in groups if g.lower() == target.lower()), None)
 
             if match:
@@ -273,7 +392,7 @@ def get_ransomwares_groups():
                             
                             print(f"   {status_icon} {C}{fqdn}{title_str}\n    {C}→ {G}Last checked : {update_str}")
                     else:
-                        print(f"{M}[!] {R}No location data found for this group.")
+                        print(f"{R}⚠️ No location data found for this group.")
                 else:
                     print(f"{M}[!] {R}Error retrieving group info: {response.status_code}")
             else:
@@ -287,7 +406,7 @@ def get_ransomwares_groups():
 def main():
     print(banner)
     print(f"{M}[!] {G}🔍 What search would you like to perform ?")
-    print(f" {C}1. {G}Telegram intelligence gathering")
+    print(f" {C}1. {G}Telegram & Twitter intelligence gathering")
     print(f" {C}2. {G}Typosquatting")
     print(f" {C}3. {G}Whois info's")
     print(f" {C}4. {G}Leaks info's")
@@ -304,10 +423,16 @@ def main():
 
         # Default 10 days
         inactive_days = get_threshold_days()
+        message_days = get_message_days()
+        max_messages = get_max_messages()
+
         active_threshold = datetime.now(timezone.utc) - timedelta(days=inactive_days)
+        message_threshold = datetime.now(timezone.utc) - timedelta(days=message_days)
 
         with client:
-            client.loop.run_until_complete(telegram(keywords, inactive_days, active_threshold))
+            client.loop.run_until_complete(
+                telegram(keywords, inactive_days, message_days, active_threshold, message_threshold, max_messages)
+            )
 
     elif choice == "2":
         print(f"\n{M}[!] {G}🔍 Type of typosquatting search")
@@ -380,9 +505,12 @@ def main():
     elif choice == "6":
         get_ransomwares_groups()
     
+    
+    
     else:    
         print(f"{M}[!] {R}Invalid choice. Closing...")
         exit()
+
 
 if __name__ == "__main__":
     main()
