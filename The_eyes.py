@@ -1,10 +1,11 @@
-import asyncio, socket, os, sys, subprocess, importlib.util, dnstwist, whois, requests
+import asyncio, socket, os, sys, subprocess, importlib.util, dnstwist, whois, requests, re, json
 from telethon.sync import TelegramClient
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from datetime import datetime, timedelta, timezone
 from colorama import init, Fore, Style
 from dnstwist import devnull
+from html import escape
 
 
 ############ API & co ############
@@ -108,10 +109,14 @@ def generate_telegram_html_report(active_groups, inactive_groups, keyword_hits, 
         for group_name, messages in keyword_hits.items():
             html += f"<h3>{escape(group_name)}</h3>"
             for msg in messages:
+                #html += f"<div class='keyword'><strong>{msg['date']}</strong><br>{escape(msg['text'])}</div>"
+
                 highlighted_text = escape(msg['text'])
                 for kw in keywords:
                     highlighted_text = re.sub(f"(?i)({re.escape(kw)})", r"<span style='color:red; font-weight:bold;'>\1</span>", highlighted_text)
                 html += f"<div class='keyword'><strong>{msg['date']}</strong><br>{highlighted_text}</div>"
+
+
 
     html += "</body></html>"
 
@@ -184,6 +189,7 @@ async def telegram(keywords, inactive_days, message_days, active_threshold, mess
     active_groups = []
     inactive_groups = []
 
+    # 🧹 Tri des groupes selon activité
     for group in groups:
         try:
             messages = await client.get_messages(group.entity, limit=1)
@@ -199,15 +205,18 @@ async def telegram(keywords, inactive_days, message_days, active_threshold, mess
             print(f"{M}[!] {R}Cannot access {group.name or 'Unknown'} : {e}")
             inactive_groups.append((group, None))
 
+    # 💤 Groupes inactifs
     print(f"{M}[!] {G}🛑 Inactive groups ({C}≥ {inactive_days} days or no messages{G}) :")
     for g, date in inactive_groups:
         date_str = date.strftime('%Y-%m-%d %H:%M') if date else "No messages"
         print(f"       {C}• {G}{g.name} {C}→ {G}{date_str}")
 
+    # ✅ Groupes actifs
     print(f"\n{M}[!] {G}✅ Active groups ({C}< {inactive_days} days{G}) :")
     for g, date in active_groups:
         print(f"       {C}• {G}{g.name} {C}→ {G}{date.strftime('%Y-%m-%d %H:%M')}")
 
+    # 🔍 Recherche de mots-clés dans les groupes actifs
     print(f"\n{M}[!] {G}🔍 Searching for keywords in active groups : {C}" + ", ".join(keywords))
     for g, _ in active_groups:
         print(f"{M}[*] {G}📂 Scanning {C}{g.name}...")
@@ -370,7 +379,7 @@ def get_ransomwares_groups():
             
         target = input(f"\n{G}🔎 Want details about a specific group? (type its name or press [Enter] to skip): ").strip()
         if target:
-            # Match insensitive (best UX)
+            # Match insensitive (meilleur UX)
             match = next((g for g in groups if g.lower() == target.lower()), None)
 
             if match:
